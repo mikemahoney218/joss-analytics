@@ -1,0 +1,206 @@
+---
+title: "JOSS Metrics"
+author: "Mike Mahoney"
+format: dashboard
+engine: jupyter
+---
+
+# Journal Metrics
+
+```{python}
+import math
+import requests
+import dateutil
+import datetime
+import statistics
+import altair as alt
+import pandas as pd
+from IPython.display import Markdown
+
+from urllib3.util import Retry
+from requests import Session
+from requests.adapters import HTTPAdapter
+
+s = Session()
+retries = Retry(
+    total=5,
+    backoff_factor=0.1,
+    status_forcelist=tuple(range(401, 600)),
+    allowed_methods=frozenset(["GET", "POST"]),
+)
+s.mount("https://", HTTPAdapter(max_retries=retries))
+
+issn = "2475-9066"
+crossref = "https://api.crossref.org"
+openalex = "https://api.openalex.org"
+headers = {"user-agent": "JOSS Analytics Dashboard (mailto:mike.mahoney.218@gmail.com)"}
+
+journals_call = requests.get(f"{crossref}/journals/{issn}", headers=headers)
+
+
+def get_works(cursor: str, headers: dict) -> dict:
+    return requests.get(
+        f"{crossref}/journals/{issn}/works/?rows=1000&cursor={cursor}", headers=headers
+    ).json()["message"]
+
+
+works_call = get_works("*", headers)
+n_works = works_call["total-results"]
+works = works_call["items"]
+
+while len(works) < n_works:
+    works_call = get_works(works_call["next-cursor"], headers)
+    if not len(works_call["items"]):
+        break
+    works = works + works_call["items"]
+
+works.sort(key=lambda x: x["is-referenced-by-count"], reverse=True)
+
+dois = [work["DOI"] for work in works]
+page_size = 50
+n_iter = len(dois) // page_size
+
+
+def make_doi_df(x):
+    out = pd.DataFrame(x["counts_by_year"], columns=["year", "cited_by_count"])
+    if len(out.index):
+        out["doi"] = x["doi"]
+        out["publication_date"] = x["publication_date"]
+        out["publication_year"] = x["publication_year"]
+        return out
+    else:
+        doi_df = pd.DataFrame(
+            [
+                {
+                    "doi": x["doi"],
+                    "publication_date": x["publication_date"],
+                    "publication_year": x["publication_year"],
+                }
+            ]
+        )
+        return pd.concat([out, doi_df], axis=1)
+
+
+yearly_cite_counts = []
+for i in range(1, n_iter):
+    search_dois = [
+        dois[x]
+        for x in list(
+            range(
+                (i - 1) * (page_size + 1),
+                min(((i * (page_size + 1)) - 1), len(dois) - 1),
+            )
+        )
+    ]
+    search_dois = "|".join(search_dois)
+    out = requests.get(
+        f"https://api.openalex.org/works?per-page=50&filter=doi:{search_dois}",
+        headers=headers,
+    ).json()
+    out = [make_doi_df(x) for x in out["results"]]
+    yearly_cite_counts = yearly_cite_counts + out
+
+yearly_cite_counts = pd.concat(yearly_cite_counts)
+```
+
+## Row {height=30%}
+
+```{python}
+#| title: '# Papers'
+#| content: valuebox
+{
+    'value': n_works
+}
+```
+
+```{python}
+#| title: '# Authors'
+#| content: valuebox
+```
+
+```{python}
+# | title: 'H-Index'
+# | content: valuebox
+cite_counts = [work["is-referenced-by-count"] for work in works]
+idx = list(range(len(cite_counts)))
+h = 0
+for cites, i in zip(cite_counts, idx):
+    h += cites >= (i + 1)
+
+{"value": h}
+```
+
+```{python}
+# | title: 'Most cited'
+Markdown(
+    pd.DataFrame(
+        zip(
+            [
+                f"[{work['title'][0]}]({work['URL']})".replace("\n", "")
+                for work in works
+            ],
+            [work["is-referenced-by-count"] for work in works],
+        ),
+        columns=["Title", "# Citations"],
+    ).to_markdown(index=False)
+)
+```
+
+## Row {height=70%}
+
+```{python}
+# | title: Papers published per year
+doi_by_year = journals_call.json()["message"]["breakdowns"]["dois-by-issued-year"]
+doi_by_year = pd.DataFrame(doi_by_year, columns=["Year", "# of papers published"])
+doi_by_year["Year"] = doi_by_year["Year"].astype(str)
+
+alt.Chart(doi_by_year).mark_line(point=True).encode(
+    x=alt.X("Year:T", axis=alt.Axis(format="%Y")),
+    y="# of papers published",
+    tooltip="# of papers published",
+).configure_point(size=200)
+```
+
+```{python}
+# | title: Citations per document
+cpd_df = pd.DataFrame(range(2016, datetime.date.today().year), columns=["Year"])
+
+unique_per_year = yearly_cite_counts[["doi", "publication_year"]].drop_duplicates()
+cpd_df["n_pubs"] = [
+    sum(unique_per_year["publication_year"] == year) for year in cpd_df["Year"]
+]
+
+
+def calc_if(year, lookback):
+    if (year - lookback) < 2016:
+        return float("nan")
+    n_pubs = sum(cpd_df[cpd_df["Year"].isin(range(year - lookback, year))]["n_pubs"])
+    relevant_cites = yearly_cite_counts[
+        yearly_cite_counts["publication_year"].isin(range(year - lookback, year))
+    ]
+    relevant_cites = relevant_cites[relevant_cites["year"] == year].dropna()
+    n_cites = sum(relevant_cites["cited_by_count"])
+    return n_cites / n_pubs
+
+
+cpd_df["2 years"] = [calc_if(year, 2) for year in cpd_df["Year"]]
+cpd_df["3 years"] = [calc_if(year, 3) for year in cpd_df["Year"]]
+cpd_df["4 years"] = [calc_if(year, 4) for year in cpd_df["Year"]]
+cpd_df["5 years"] = [calc_if(year, 5) for year in cpd_df["Year"]]
+
+cpd_df = (
+    cpd_df.reset_index()
+    .melt("Year", var_name="Metric", value_name="Citations per document")
+    .dropna()
+)
+cpd_df = cpd_df[cpd_df["Metric"].isin(["2 years", "3 years", "4 years", "5 years"])]
+cpd_df["Year"] = cpd_df["Year"].astype(str)
+
+alt.Chart(cpd_df).mark_line(point=True).encode(
+    x=alt.X("Year:T", axis=alt.Axis(format="%Y", tickCount="year")),
+    y=alt.Y("Citations per document", scale=alt.Scale(domainMin=0)),
+    tooltip=alt.Tooltip("Citations per document", format=".2f"),
+    color="Metric",
+).configure_point(size=200)
+```
+
