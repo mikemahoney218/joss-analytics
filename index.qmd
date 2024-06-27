@@ -170,7 +170,6 @@ cpd_df["n_pubs"] = [
     sum(unique_per_year["publication_year"] == year) for year in cpd_df["Year"]
 ]
 
-
 def calc_if(year, lookback):
     if (year - lookback) < 2016:
         return float("nan")
@@ -182,11 +181,8 @@ def calc_if(year, lookback):
     n_cites = sum(relevant_cites["cited_by_count"])
     return n_cites / n_pubs
 
-
-cpd_df["2 years"] = [calc_if(year, 2) for year in cpd_df["Year"]]
-cpd_df["3 years"] = [calc_if(year, 3) for year in cpd_df["Year"]]
-cpd_df["4 years"] = [calc_if(year, 4) for year in cpd_df["Year"]]
-cpd_df["5 years"] = [calc_if(year, 5) for year in cpd_df["Year"]]
+for i in range(2, 6):
+    cpd_df[f'{i} years'] = [calc_if(year, i) for year in cpd_df["Year"]]
 
 cpd_df = (
     cpd_df.reset_index()
