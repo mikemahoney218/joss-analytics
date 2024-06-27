@@ -1,5 +1,6 @@
 altair==5.3.0
 ipython==8.12.3
+jupyter==1.0.0
 pandas==2.2.2
 python_dateutil==2.9.0.post0
 Requests==2.32.3
