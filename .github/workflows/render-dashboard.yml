@@ -1,0 +1,23 @@
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 8 * * 1"
+
+jobs:
+  build-deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+  steps:
+  - uses: actions/checkout@v4
+  - uses: actions/setup-python@v5
+    with:
+      python-version: '3.10'
+      cache: 'pip'
+  - run: pip install -r requirements.txt
+  - uses: quarto-dev/quarto-actions/setup@v2
+  - uses: quarto-dev/quarto-actions/publish@v2
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    with:
+      path: index.qmd
